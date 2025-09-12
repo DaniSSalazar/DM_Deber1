@@ -1,2 +1,137 @@
+1. Descripción del proyecto
 
+Este proyecto implementa pipelines de extracción de datos desde QuickBooks Online (QBO) para tres entidades: Invoice, Customer y Item. Los datos se exportan a archivos TXT como capa RAW, con payload completo, metadatos de ingesta y control de idempotencia.
+
+Se utiliza Mage AI para la orquestación de pipelines, y la autenticación se maneja con OAuth 2.0 (Refresh Token). Los pipelines soportan segmentación histórica, paginación y manejo de rate limits con backoff exponencial.
+
+Diagrama de arquitectura
++----------------+           +----------------+
+|                |  API QBO  |                |
+| QuickBooks     +---------->+ Mage AI        |
+| Online         |           | Pipelines      |
+|                |           | (Invoice,      |
++----------------+           |  Customer,     |
+                             |  Item)         |
+                             +--------+-------+
+                                      |
+                                      v
+                             +----------------+
+                             | TXT files      |
+                             | (RAW layer)    |
+                             +----------------+
+
+2. Levantar contenedores y configurar el proyecto
+
+Instalar Docker y Docker Compose.
+
+Clonar el repositorio del proyecto.
+
+Levantar Mage en contenedor:
+
+docker compose up -d
+
+Acceder a Mage UI:
+
+http://localhost:6789
+
+Configurar triggers, pipelines y secretos dentro de Mage.
+
+3. Gestión de secretos
+
+Todos los secretos se manejan con Mage Secrets:
+
+Nombre secreto	Propósito	Responsable	Rotación
+qb_client_id	Cliente OAuth QBO	Equipo Backend	Cada 6 meses
+qb_client_secret	Secreto OAuth QBO	Equipo Backend	Cada 6 meses
+qb_refresh_token	Refresh Token QBO	Equipo Backend	Cada 3 meses
+qb_realm_id	ID de empresa en QBO	Equipo Backend	Cada 6 meses
+
+No se exponen valores en el repositorio ni en el entorno.
+
+4. Pipelines qb_<entidad>_backfill
+Parámetros
+
+fecha_inicio (ISO UTC, ej. 2014-09-01)
+
+fecha_fin (ISO UTC, ej. 2025-09-01)
+
+page_size (opcional, default=100)
+
+Segmentación
+
+Cada pipeline segmenta el rango histórico en tramos de 50 días.
+
+Paginación interna para cada tramo según page_size.
+
+Reintentos y runbook
+
+Reintentos automáticos ante errores de request o rate limits.
+
+Manejo de rate limits con backoff exponencial y jitter:
+
+wait = min(2 ** retries + random.uniform(0,1), 60)
+
+
+Runbook disponible:
+
+Revisar logs de rango de fechas y número de filas.
+
+Reejecutar tramo fallido (fecha_inicio/fecha_fin).
+
+Validar que no se dupliquen filas en TXT.
+
+5. Trigger one-time
+
+Nombre: qb_invoice_trigger
+
+Tipo: once
+
+Fecha/hora UTC: 2025-09-12 00:00
+
+Equivalencia Guayaquil (GMT-5): 2025-09-11 19:00
+
+Política post-ejecución: deshabilitado automáticamente y marcado como completado en Mage UI.
+
+6. Esquema RAW (TXT)
+
+Ubicación: data/invoices.txt, data/customers.txt, data/items.txt
+
+Formato: JSON por línea, con payload completo.
+
+Metadatos obligatorios:
+
+id
+
+ingested_at_utc
+
+extract_window_start_utc
+
+extract_window_end_utc
+
+page_number
+
+page_size
+
+Idempotencia: reejecuciones no duplican registros (control por ventana de extracción y page_number).
+
+7. Validaciones y volumetría
+
+Cada pipeline imprime log de tramos:
+
+Rango YYYY-MM-DD a YYYY-MM-DD -> N filas
+Total <entidad> descargadas: N
+
+
+Validación mínima: revisar que el total esperado concuerde con QBO.
+
+Volumetría: comparar número de registros por tramo.
+
+8. Troubleshooting
+Problema	Solución / Verificación
+OAuth 2.0 falla	Revisar secrets en Mage y que refresh_token sea válido
+Paginación incorrecta	Revisar logs, verificar page_size y rango de fechas
+Rate limit 429	Se reintenta automáticamente con backoff; si falla, aumentar max_retries
+Timezones	Todos los filtros deben estar en UTC; convertir si se interpreta hora local
+Archivos TXT no se generan	Verificar permisos de carpeta, ruta relativa en file_path
+Fallos en reintentos	Consultar runbook: reejecutar tramo histórico específico
 
