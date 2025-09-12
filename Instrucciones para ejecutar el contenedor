@@ -1,0 +1,43 @@
+Clonar el repositorio
+
+git clone https://github.com/DaniSSalazar/DM_Deber1.git
+cd DM_Deber1.git
+
+
+Construir la imagen de Mage localmente
+
+En la raíz del proyecto, donde está el Dockerfile de Mage, ejecutar:
+
+docker build -t mage_local .
+
+
+mage_local es el nombre de la imagen local.
+
+
+Levantar el contenedor
+
+docker run -d \
+  -p 6789:6789 \
+  --name mage_app \
+  --network host \
+  -v $(pwd)/data:/app/data \
+  mage_local
+
+
+Explicación de parámetros:
+
+-p 6789:6789:  puerto de Mage UI.
+
+--name mage_app: nombre del contenedor.
+
+--network host: permite que Mage se comunique con otros servicios locales
+
+-v $(pwd)/data:/app/data: monta la carpeta data para guardar los archivos TXT generados.
+
+mage_local: la imagen construida localmente.
+
+Acceder a Mage UI
+
+http://localhost:6789
+
+
