@@ -1,0 +1,14 @@
+version: "3.8"
+services:
+  mage:
+    image: mageai/mageai:latest
+    platform: linux/amd64
+    container_name: mage_container
+    command: mage start /home/src
+    ports:
+      - "6789:6789"
+    volumes:
+      - ./mage_data:/home/src
+      - /c/Users/samys/Mage:/mnt/mage_tokens
+    environment:
+      USER_CODE_PATH: /home/src
