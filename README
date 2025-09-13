@@ -22,9 +22,8 @@ Diagrama de arquitectura
 
 2. Levantar contenedores y configurar el proyecto
 
-Instalar Docker y Docker Compose.
 
-Clonar el repositorio del proyecto.
+Clonar el repositorio.
 
 Levantar Mage en contenedor:
 
@@ -39,12 +38,30 @@ Configurar triggers, pipelines y secretos dentro de Mage.
 3. Gestión de secretos
 
 Todos los secretos se manejan con Mage Secrets:
+qb_client_id – Cliente OAuth QBO
+Es el identificador público de tu aplicación en QuickBooks Online (QBO).
+Permite que QBO reconozca qué aplicación está intentando conectarse.
+Responsable: Equipo Backend
+Rotación: Cada 6 meses
 
-Nombre secreto	Propósito	Responsable	Rotación
-qb_client_id	Cliente OAuth QBO	Equipo Backend	Cada 6 meses
-qb_client_secret	Secreto OAuth QBO	Equipo Backend	Cada 6 meses
-qb_refresh_token	Refresh Token QBO	Equipo Backend	Cada 3 meses
-qb_realm_id	ID de empresa en QBO	Equipo Backend	Cada 6 meses
+qb_client_secret – Secreto OAuth QBO
+Es la “contraseña” de la aplicación en QBO. Junto con el client_id, se usa para autenticar la app cuando se obtiene un token.
+Nunca debe exponerse públicamente.
+Responsable: Equipo Backend
+Rotación: Cada 6 meses
+
+qb_refresh_token – Refresh Token QBO
+Se usa para obtener un nuevo access_token cuando este expira.
+Permite que el pipeline siga funcionando sin que un usuario tenga que iniciar sesión cada vez.
+Responsable: Equipo Backend
+Rotación: cada 101 días
+
+qb_realm_id – ID de empresa en QBO
+Identifica la empresa específica de QBO a la que la aplicación se conecta.
+Permite hacer consultas sobre los datos correctos de esa empresa.
+Responsable: Equipo Backend
+Rotación: Cada 6 meses
+
 
 No se exponen valores en el repositorio ni en el entorno.
 
@@ -73,16 +90,13 @@ wait = min(2 ** retries + random.uniform(0,1), 60)
 
 
 Runbook disponible:
-
 Revisar logs de rango de fechas y número de filas.
-
 Reejecutar tramo fallido (fecha_inicio/fecha_fin).
-
 Validar que no se dupliquen filas en TXT.
 
 5. Trigger one-time
 
-Nombre: qb_invoice_trigger
+Nombres: qb_invoice_trigger, qb_items_trigger, qb_customers_trigger
 
 Tipo: once
 
@@ -94,24 +108,16 @@ Política post-ejecución: deshabilitado automáticamente y marcado como complet
 
 6. Esquema RAW (TXT)
 
-Ubicación: data/invoices.txt, data/customers.txt, data/items.txt
-
+Estos archivos txt se crean dentro del contenedor en la 
+Ubicación: app/invoices.txt, app/customers.txt, app/items.txt
 Formato: JSON por línea, con payload completo.
-
 Metadatos obligatorios:
-
 id
-
 ingested_at_utc
-
 extract_window_start_utc
-
 extract_window_end_utc
-
 page_number
-
 page_size
-
 Idempotencia: reejecuciones no duplican registros (control por ventana de extracción y page_number).
 
 7. Validaciones y volumetría
@@ -123,15 +129,61 @@ Total <entidad> descargadas: N
 
 
 Validación mínima: revisar que el total esperado concuerde con QBO.
-
 Volumetría: comparar número de registros por tramo.
 
 8. Troubleshooting
-Problema	Solución / Verificación
-OAuth 2.0 falla	Revisar secrets en Mage y que refresh_token sea válido
-Paginación incorrecta	Revisar logs, verificar page_size y rango de fechas
-Rate limit 429	Se reintenta automáticamente con backoff; si falla, aumentar max_retries
-Timezones	Todos los filtros deben estar en UTC; convertir si se interpreta hora local
-Archivos TXT no se generan	Verificar permisos de carpeta, ruta relativa en file_path
-Fallos en reintentos	Consultar runbook: reejecutar tramo histórico específico
+  1. Autenticación y OAuth
+  Problema: No se puede obtener access_token o el pipeline falla al llamar la API de QuickBooks.
+  Causas comunes:
+  Secrets (qb_client_id, qb_client_secret, qb_refresh_token, qb_realm_id) mal configurados en Mage.
+  Refresh token expirado o revocado.
+  Solución:
+  Verificar que los nombres de los secrets en Mage coincidan con los del código.
+  Generar un nuevo refresh token en QBO si está vencido.
+  Confirmar que qb_realm_id corresponde a la empresa correcta.
+  
+  2. Rate limits y reintentos
+  Problema: La API devuelve error 429 o la descarga se detiene.
+  Causas comunes: Excesivas solicitudes en poco tiempo.
+  Solución:
+  El loader ya implementa backoff exponencial con jitter; asegúrate de no sobrecargar la API ajustando page_size o delta.
+  Si sigue fallando, esperar 1-2 minutos y volver a ejecutar la pipeline.
+  
+  3. Paginación de resultados
+  Problema: Solo se descargan algunas filas y faltan datos históricos.
+  Causas comunes: Paginación incompleta o límite de resultados por query.
+  Solución:
+  Verificar que start_pos y MAXRESULTS se estén calculando correctamente en _fetch_qb_by_date.
+  Revisar los logs impresos de cada rango de fechas para asegurarse de que no haya saltos.
+  
+  4. Problemas de timezones
+  Problema: Filtrado por fechas devuelve 0 filas o datos incorrectos.
+  Causas comunes: Desalineación entre UTC y la hora local, o formato incorrecto de MetaData.LastUpdatedTime.
+  Solución:
+  Confirmar que todas las fechas de filtro (fecha_inicio, fecha_fin) estén en UTC.
+  Revisar que MetaData.LastUpdatedTime de QBO se use correctamente en ISO 8601.
 
+  5. Almacenamiento en archivos TXT  
+  Problema: El archivo invoices.txt (o items.txt, customers.txt) no se genera o queda vacío.
+  Causas comunes:
+  Ruta incorrecta o permisos insuficientes.
+  No hay datos en el rango de fechas solicitado.
+  Solución:
+  Asegurarse de que file_path sea una ruta relativa dentro del proyecto o que la carpeta exista (os.makedirs(folder, exist_ok=True) está implementado).
+  Verificar que _fetch_qb_by_date realmente haya retornado filas.
+  Revisar los logs de cada rango de fechas impresos al ejecutar la pipeline.
+
+  6. Errores de ejecución en Mage
+  Problema: La pipeline no se ejecuta o falla al iniciar.
+  Causas comunes:
+  Contenedor Mage no levantado correctamente.
+  Cambios en el código no guardados antes de ejecutar.
+  Solución:
+  Levantar contenedor Mage según las instrucciones del README.
+  Confirmar que los triggers estén activos y correctamente configurados (one-time).
+  Revisar la consola de Mage para ver errores específicos y stack trace.
+
+  7. Reejecución e idempotencia  
+  Problema: Datos duplicados al reejecutar la pipeline.
+  Solución:
+  La lógica de filtrado por rango y escritura por páginas asegura idempotencia; verificar que no se cambie el nombre del archivo o los offsets de página.
